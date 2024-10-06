@@ -4,8 +4,9 @@ on:
   push:
     branches:
       - master
-    paths-ignore:
-      - "README.md"
+    paths:
+      - "**"
+      - "!README.md"
 
 jobs:
   bump-version:
