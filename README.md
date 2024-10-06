@@ -316,7 +316,7 @@ goobie_mysql.NewConn(config: string | table, options: table | nil) --> Connectio
 
     ```lua
     {
-        ----
+        ---------------------------------------
         uri = "mysql://user:password@localhost/database",
 
         -- OR
@@ -326,7 +326,12 @@ goobie_mysql.NewConn(config: string | table, options: table | nil) --> Connectio
         user = "user",
         password = "password",
         port = 3306,
-        ----
+        ---------------------------------------
+
+        charset = "utf8mb4", -- Default charset
+        collation = "utf8mb4_0900_ai_ci", -- If you don't provide one then MySQL server will select the default one
+        timezone = "UTC", -- Default timezone
+        statement_cache_capacity = 100, -- Default statement cache capacity. Caching is handled using LRU, meaning when the amount of queries hits the defined limit, the oldest statement will get dropped.
 
         -- Event callbacks can be included here (see below)
     }
