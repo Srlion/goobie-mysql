@@ -2,8 +2,10 @@ name: Build
 
 on:
   push:
+    branches:
+      - master
     paths-ignore:
-      - "**/README.md"
+      - "README.md"
 
 jobs:
   bump-version:
