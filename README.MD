@@ -137,7 +137,7 @@ conn:Execute("INSERT INTO users (name, age) VALUES (?, ?)", {
 
 ```lua
 -- Synchronous execution
-local err, result = conn:Execute("UPDATE users SET age = age + 1 WHERE id = 1; SELECT age FROM users WHERE id = 1;", {
+local err, result = conn:Execute("UPDATE users SET age = age + 1 WHERE id = 1;", {
     sync = true,
 })
 if err then
