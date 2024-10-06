@@ -1,0 +1,3 @@
+hard_tabs = false
+imports_granularity = "Crate"
+chain_width = 50

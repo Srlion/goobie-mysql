@@ -1,0 +1,150 @@
+name: Build
+
+on:
+  push:
+    paths-ignore:
+      - "**/README.md"
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.bump_version.outputs.new_tag }}
+      version_underscore: ${{ steps.version_underscore.outputs.version_underscore }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
+
+      - name: Bump Version
+        id: bump_version
+        uses: anothrNick/github-tag-action@1.71.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: false
+          DEFAULT_BUMP: "patch"
+          INITIAL_VERSION: "0.1.0"
+
+      - name: Output Version with underscores
+        id: version_underscore
+        run: |
+          original_version="${{ steps.bump_version.outputs.new_tag }}"
+          modified_version=${original_version//./_}
+          echo "version_underscore=$modified_version" >> "${GITHUB_OUTPUT}"
+
+  build-linux:
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: write
+    needs: bump-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      # - name: Set up cargo cache
+      #   uses: actions/cache@v4
+      #   continue-on-error: false
+      #   with:
+      #     path: |
+      #       ~/.cargo/bin/
+      #       ~/.cargo/registry/index/
+      #       ~/.cargo/registry/cache/
+      #       ~/.cargo/git/db/
+      #       target/
+      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      #     restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install gcc-i686-linux-gnu
+          sudo apt-get install gcc-multilib
+
+      - name: Add 32-bit & 64-bit targets
+        run: rustup target add i686-unknown-linux-gnu x86_64-unknown-linux-gnu
+
+      - name: Install cargo-edit to bump version
+        run: cargo install cargo-edit || true
+
+      - name: Bump Cargo version
+        run: cargo set-version "${{ needs.bump-version.outputs.tag }}"
+
+      - name: Build 32-bit & 64-bit
+        run: |
+          cargo build --release --target i686-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Rename binaries
+        run: |
+          mv target/i686-unknown-linux-gnu/release/libgmsv_goobie_mysql.so target/i686-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux.dll
+          mv target/x86_64-unknown-linux-gnu/release/libgmsv_goobie_mysql.so target/x86_64-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux64.dll
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: "${{ needs.bump-version.outputs.tag }}"
+          artifacts: |
+            target/i686-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux.dll
+            target/x86_64-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux64.dll
+
+  build-windows:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    needs: bump-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      # - name: Set up cargo cache
+      #   uses: actions/cache@v4
+      #   continue-on-error: false
+      #   with:
+      #     path: |
+      #       ~/.cargo/bin/
+      #       ~/.cargo/registry/index/
+      #       ~/.cargo/registry/cache/
+      #       ~/.cargo/git/db/
+      #       target/
+      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      #     restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Add 32-bit & 64-bit targets
+        run: rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
+
+      - name: Install cargo-edit to bump version
+        run: cargo install cargo-edit
+
+      - name: Bump Cargo version
+        run: cargo set-version "${{ needs.bump-version.outputs.tag }}"
+
+      - name: Build 32-bit & 64-bit
+        run: |
+          cargo build --release --target i686-pc-windows-msvc
+          cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Rename binaries
+        run: |
+          mv target/i686-pc-windows-msvc/release/gmsv_goobie_mysql.dll target/i686-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win32.dll
+          mv target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql.dll target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win64.dll
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: "${{ needs.bump-version.outputs.tag }}"
+          artifacts: |
+            target/i686-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win32.dll
+            target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win64.dll
