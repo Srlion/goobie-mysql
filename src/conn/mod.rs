@@ -110,19 +110,13 @@ impl Conn {
     }
 
     #[inline]
-    pub async fn start(
-        &self,
-        mut guard: Option<OwnedMutexGuard<Option<MySqlConnection>>>,
-    ) -> Result<()> {
+    pub async fn start(&self) -> Result<()> {
         let state = self.state();
         if state == State::Connecting {
             return Ok(());
         }
 
-        let mut inner_conn = match guard {
-            Some(ref mut conn) => conn.take(),
-            None => self.inner.lock().await.take(),
-        };
+        let mut inner_conn = self.inner.lock().await.take();
 
         if let Some(conn) = inner_conn.take() {
             let _ = conn.close().await; // let's gracefully close the connection if there is any
@@ -134,11 +128,7 @@ impl Conn {
 
         match MySqlConnection::connect_with(connect_opts).await {
             Ok(conn) => {
-                if let Some(mut guard) = guard {
-                    guard.replace(conn);
-                } else {
-                    self.inner.lock().await.replace(conn);
-                }
+                inner_conn.replace(conn);
             }
             Err(e) => {
                 self.set_state(State::Error);
@@ -223,7 +213,7 @@ fn start_connect(l: lua::State) -> Result<i32> {
 
     let on_connected = conn.connect_options.on_connected;
     run_async(async move {
-        let res = conn.start(None).await;
+        let res = conn.start().await;
         wait_lua_tick(traceback.clone(), move |l| match res {
             Ok(_) => {
                 l.pcall_ignore_function_ref(on_connected, 0, 0);
@@ -238,7 +228,7 @@ fn start_connect(l: lua::State) -> Result<i32> {
 #[lua_function]
 fn start_connect_sync(l: lua::State) -> Result<i32> {
     let conn = Conn::extract_userdata(l)?;
-    wait_async(l, async move { conn.start(None).await })?;
+    wait_async(l, async move { conn.start().await })?;
     Ok(0)
 }
 
