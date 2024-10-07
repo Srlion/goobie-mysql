@@ -389,6 +389,31 @@ if err then
 end
 ```
 
+Also calls `on_disconnected` with an error if one occurs.
+
+#### `State`
+
+Returns the current connection state.
+
+> **Note:** Do **NOT** use numbers directly to check the state of the connection. Always use the provided constants. The numeric values of these constants may change in future versions, and using them directly could break your code.
+
+```lua
+local state = conn:State() -- compare it to goobie_mysql.STATES.*
+```
+
+#### `Ping`
+
+Pings the database to check the connection status.
+
+> **Note:** It's generally not recommended to use this method to check if a connection is alive, as it may not be reliable. For more information, refer to [this article](https://www.percona.com/blog/checking-for-a-live-database-connection-considered-harmful/).
+
+```lua
+local success, err = conn:Ping()
+if not success then
+    print("Error during ping:", err.message)
+end
+```
+
 #### `Execute`
 
 Executes a query without fetching data.

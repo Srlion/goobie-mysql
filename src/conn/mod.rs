@@ -31,6 +31,9 @@ pub const METHODS: &[LuaReg] = lua_regs![
     "Disconnect" => start_disconnect,
     "DisconnectSync" => start_disconnect_sync,
 
+    "State" => get_state,
+    "Ping" => ping,
+
     "Execute" => execute,
     "FetchOne" => fetch_one,
     "Fetch" => fetch,
@@ -42,8 +45,6 @@ pub const METHODS: &[LuaReg] = lua_regs![
     "IsConnecting" => is_connecting,
     "IsDisconnected" => is_disconnected,
     "IsError" => is_error,
-
-    "State" => get_state,
 
     "__tostring" => __tostring,
     "__gc" => __gc,
@@ -119,7 +120,9 @@ impl Conn {
         let mut inner_conn = self.inner.lock().await.take();
 
         if let Some(conn) = inner_conn.take() {
-            let _ = conn.close().await; // let's gracefully close the connection if there is any
+            // let's gracefully close the connection if there is any
+            // if it fails, we will still try to connect. we just try to close it
+            let _ = conn.close().await;
         }
 
         self.set_state(State::Connecting);
@@ -169,6 +172,19 @@ impl Conn {
     #[inline]
     fn set_state(&self, state: State) {
         self.state.store(state, Ordering::Release);
+    }
+
+    #[inline]
+    async fn ping(&self) -> Result<()> {
+        let mut inner_conn = self.inner.lock().await;
+        let inner_conn = match inner_conn.as_mut() {
+            Some(conn) => conn,
+            None => bail!("connection is not established"),
+        };
+
+        inner_conn.ping().await?;
+
+        Ok(())
     }
 }
 
@@ -345,6 +361,24 @@ fn get_state(l: lua::State) -> Result<i32> {
     let conn = Conn::extract_userdata(l)?;
     l.push_number(conn.state() as i32);
     Ok(1)
+}
+
+#[lua_function]
+fn ping(l: lua::State) -> Result<i32> {
+    let conn = Conn::extract_userdata(l)?;
+
+    let res = wait_async(l, async move { conn.ping().await });
+    match res {
+        Ok(_) => {
+            l.push_bool(true);
+            Ok(1)
+        }
+        Err(e) => {
+            l.push_bool(false);
+            handle_error(l, e);
+            Ok(2)
+        }
+    }
 }
 
 #[lua_function]
