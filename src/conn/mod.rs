@@ -115,7 +115,7 @@ impl Conn {
         mut guard: Option<OwnedMutexGuard<Option<MySqlConnection>>>,
     ) -> Result<()> {
         let state = self.state();
-        if state == State::Connected || state == State::Connecting {
+        if state == State::Connecting {
             return Ok(());
         }
 
