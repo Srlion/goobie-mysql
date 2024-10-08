@@ -45,23 +45,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
 
-      # - name: Set up cargo cache
-      #   uses: actions/cache@v4
-      #   continue-on-error: false
-      #   with:
-      #     path: |
-      #       ~/.cargo/bin/
-      #       ~/.cargo/registry/index/
-      #       ~/.cargo/registry/cache/
-      #       ~/.cargo/git/db/
-      #       target/
-      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      #     restore-keys: ${{ runner.os }}-cargo-
+      - name: Set up rust-cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install build dependencies
         run: |
@@ -105,23 +93,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
 
-      # - name: Set up cargo cache
-      #   uses: actions/cache@v4
-      #   continue-on-error: false
-      #   with:
-      #     path: |
-      #       ~/.cargo/bin/
-      #       ~/.cargo/registry/index/
-      #       ~/.cargo/registry/cache/
-      #       ~/.cargo/git/db/
-      #       target/
-      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      #     restore-keys: ${{ runner.os }}-cargo-
+      - name: Set up rust-cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Add 32-bit & 64-bit targets
         run: rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
