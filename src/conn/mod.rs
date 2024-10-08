@@ -83,11 +83,12 @@ impl Conn {
     pub fn extract_userdata(l: lua::State) -> Result<Arc<Self>> {
         let conn_ptr = l.get_userdata::<*const Self>(1, Some(META_NAME))?;
         let conn_ptr = *conn_ptr;
+
         unsafe {
             Arc::increment_strong_count(conn_ptr);
         }
-        let conn = unsafe { Arc::from_raw(conn_ptr) };
 
+        let conn = unsafe { Arc::from_raw(conn_ptr) };
         {
             let transaction_coroutine_ref = conn
                 .transaction_coroutine_ref
@@ -99,7 +100,19 @@ impl Conn {
                 bail!("DEADLOCK DETECTED: cannot run a query in a transaction while it's running");
             }
         }
+        Ok(conn)
+    }
 
+    #[inline]
+    pub fn extract_userdata_no_lock(l: lua::State) -> Result<Arc<Self>> {
+        let conn_ptr = l.get_userdata::<*const Self>(1, Some(META_NAME))?;
+        let conn_ptr = *conn_ptr;
+
+        unsafe {
+            Arc::increment_strong_count(conn_ptr);
+        }
+
+        let conn = unsafe { Arc::from_raw(conn_ptr) };
         Ok(conn)
     }
 
@@ -331,35 +344,35 @@ fn fetch(l: lua::State) -> Result<i32> {
 
 #[lua_function]
 fn is_connected(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_bool(conn.state() == State::Connected);
     Ok(1)
 }
 
 #[lua_function]
 fn is_connecting(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_bool(conn.state() == State::Connecting);
     Ok(1)
 }
 
 #[lua_function]
 fn is_disconnected(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_bool(conn.state() == State::Disconnected);
     Ok(1)
 }
 
 #[lua_function]
 fn is_error(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_bool(conn.state() == State::Error);
     Ok(1)
 }
 
 #[lua_function]
 fn get_state(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_number(conn.state() as i32);
     Ok(1)
 }
@@ -384,7 +397,7 @@ fn ping(l: lua::State) -> Result<i32> {
 
 #[lua_function]
 fn __tostring(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = Conn::extract_userdata_no_lock(l)?;
     l.push_string(&conn.to_string());
     Ok(1)
 }
