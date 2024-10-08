@@ -32,7 +32,7 @@ Goobie MySQL is a Rust library for Garry's Mod that provides a simple interface 
 
 To install Goobie MySQL:
 
-1. Download the desired version from the [GitHub releases](https://github.com/your-repo/releases).
+1. Download the latest version from the [GitHub releases](https://github.com/Srlion/goobie-mysql/releases/latest).
 2. Extract the module to your Garry's Mod `lua/bin` directory.
 
 **Note:** To avoid conflicts when multiple addons use different versions of the library, require the specific version you need:
