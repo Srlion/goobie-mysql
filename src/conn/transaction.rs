@@ -2,7 +2,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::{bail, Result};
 use gmod::{lua::*, *};
-use sqlx::{Executor, MySqlConnection};
+use sqlx::{Connection as _, Executor, MySqlConnection};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{
@@ -17,6 +17,8 @@ use super::Conn;
 const META_NAME: LuaCStr = cstr_from_args!(GLOBAL_TABLE_NAME, "_transaction");
 
 pub const METHODS: &[LuaReg] = lua_regs![
+    "Ping" => ping,
+
     "Execute" => execute,
     "FetchOne" => fetch_one,
     "Fetch" => fetch,
@@ -278,6 +280,30 @@ pub fn new(l: lua::State) -> Result<i32> {
 #[lua_function]
 pub fn new_sync(l: lua::State) -> Result<i32> {
     internal_new(l, true)
+}
+
+#[lua_function]
+fn ping(l: lua::State) -> Result<i32> {
+    let txn_mutex = Transaction::extract_userdata(l)?;
+
+    let res = wait_async(l, async move {
+        let mut txn = txn_mutex.lock().await;
+        get_connection!(txn.conn_guard, conn => conn.ping().await)
+    });
+
+    let res = match res {
+        Ok(_) => {
+            l.push_boolean(true);
+            1
+        }
+        Err(e) => {
+            l.push_boolean(false);
+            handle_sqlx_error(l, e);
+            2
+        }
+    };
+
+    Ok(res)
 }
 
 fn internal_query(l: lua::State, query_type: QueryType) -> Result<i32> {
