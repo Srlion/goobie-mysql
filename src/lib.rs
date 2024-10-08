@@ -11,6 +11,10 @@ pub use runtime::{run_async, wait_async};
 
 pub static mut GMOD_CLOSED: bool = false;
 
+const METHODS: &[LuaReg] = lua_regs![
+    "Poll" => poll,
+];
+
 #[inline]
 pub fn is_gmod_closed() -> bool {
     unsafe { GMOD_CLOSED }
@@ -22,6 +26,13 @@ fn gmod13_open(l: lua::State) -> i32 {
     unsafe {
         GMOD_CLOSED = false;
     }
+
+    l.register(GLOBAL_TABLE_NAME_C.as_ptr(), METHODS.as_ptr());
+    {
+        l.push_string(crate::VERSION);
+        l.set_field(-2, c"VERSION");
+    }
+    l.pop();
 
     runtime::load(get_max_worker_threads(l));
 
@@ -37,6 +48,13 @@ fn gmod13_close(l: lua::State) -> i32 {
     }
 
     runtime::unload();
+
+    0
+}
+
+#[lua_function]
+fn poll(l: lua::State) -> i32 {
+    task_queue::run_callbacks(l);
 
     0
 }

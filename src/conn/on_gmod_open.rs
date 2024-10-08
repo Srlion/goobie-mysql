@@ -8,10 +8,6 @@ const CONNECT_METHODS: &[LuaReg] = lua_regs![
 
 pub fn init(l: lua::State) {
     l.register(GLOBAL_TABLE_NAME_C.as_ptr(), CONNECT_METHODS.as_ptr());
-    {
-        l.push_string(crate::VERSION);
-        l.set_field(-2, c"VERSION");
-    }
     l.pop();
 
     l.new_metatable(super::META_NAME);
