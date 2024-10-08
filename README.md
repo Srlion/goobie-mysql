@@ -414,6 +414,25 @@ if not success then
 end
 ```
 
+#### `Poll`
+
+Polls the connection to handle pending queries.
+
+```lua
+local is_done = false
+conn:Execute("SELECT 1", {
+    on_done = function()
+        is_done = true
+    },
+})
+
+while not is_done do
+    conn:Poll()
+end
+
+print("Query is done!")
+```
+
 #### `Execute`
 
 Executes a query without fetching data.
