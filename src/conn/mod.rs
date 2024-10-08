@@ -9,7 +9,7 @@ use std::{
 use anyhow::{bail, Result};
 use gmod::{lua::*, *};
 use sqlx::{mysql::MySqlConnection, Connection};
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::Mutex;
 
 pub mod on_gmod_open;
 mod options;
