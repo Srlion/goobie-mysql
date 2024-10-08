@@ -19,11 +19,11 @@ Goobie MySQL is a Rust library for Garry's Mod that provides a simple interface 
   - [Executing Queries](#executing-queries)
   - [Transactions](#transactions)
 - [API Reference](#api-reference)
+  - [Globals](#globals)
   - [Error Table](#error-table)
   - [Query Options](#query-options)
   - [Connection Methods](#connection-methods)
   - [Transaction Methods](#transaction-methods)
-  - [Constants](#constants)
 - [Graceful Shutdown](#graceful-shutdown)
 - [Future Plans](#future-plans)
 - [ConVars](#convars)
@@ -261,6 +261,54 @@ end)
 
 ## API Reference
 
+### Globals
+
+#### `goobie_mysql.VERSION`
+
+A string representing the version of the library.
+
+Example:
+
+```lua
+print(goobie_mysql.VERSION) --> "0.1.0"
+```
+
+#### `goobie_mysql.STATES`
+
+A table containing the connection states:
+
+```lua
+{
+    CONNECTED = number,
+    CONNECTING = number,
+    NOT_CONNECTED = number,
+    DISCONNECTED = number,
+    ERROR = number,
+}
+```
+
+#### `Poll`
+
+Polls all pending tasks. You can use this function to wait for asynchronous tasks to complete.
+
+You usually don't need to call this function directly, as you can already use `sync = true` with queries to make them synchronous.
+I use it to test async queries in a synchronous environment, to verify that they work as expected.
+
+```lua
+local is_done = false
+conn:Execute("SELECT 1", {
+    on_done = function()
+        is_done = true
+    },
+})
+
+while not is_done do
+    goobie_mysql.Poll()
+end
+
+print("Query is done!")
+```
+
 ### Error Table
 
 All errors return a table containing the following fields:
@@ -414,25 +462,6 @@ if not success then
 end
 ```
 
-#### `Poll`
-
-Polls the connection to handle pending queries.
-
-```lua
-local is_done = false
-conn:Execute("SELECT 1", {
-    on_done = function()
-        is_done = true
-    },
-})
-
-while not is_done do
-    conn:Poll()
-end
-
-print("Query is done!")
-```
-
 #### `Execute`
 
 Executes a query without fetching data.
@@ -570,32 +599,6 @@ end
 - **Do NOT** keep transactions open for a long time.
 - **Do NOT** keep transactions open for a long time.
 - Transaction queries do **not** accept callbacks; they return results directly.
-
-### Constants
-
-#### `goobie_mysql.VERSION`
-
-A string representing the version of the library.
-
-Example:
-
-```lua
-print(goobie_mysql.VERSION) --> "0.1.0"
-```
-
-#### `goobie_mysql.STATES`
-
-A table containing the connection states:
-
-```lua
-{
-    CONNECTED = number,
-    CONNECTING = number,
-    NOT_CONNECTED = number,
-    DISCONNECTED = number,
-    ERROR = number,
-}
-```
 
 **Usage:**
 
