@@ -17,6 +17,7 @@ use super::Conn;
 const META_NAME: LuaCStr = cstr_from_args!(GLOBAL_TABLE_NAME, "_transaction");
 
 pub const METHODS: &[LuaReg] = lua_regs![
+    "IsOpen" => is_open,
     "Ping" => ping,
 
     "Execute" => execute,
@@ -280,6 +281,20 @@ pub fn new(l: lua::State) -> Result<i32> {
 #[lua_function]
 pub fn new_sync(l: lua::State) -> Result<i32> {
     internal_new(l, true)
+}
+
+#[lua_function]
+fn is_open(l: lua::State) -> Result<i32> {
+    match Transaction::extract_userdata(l) {
+        Ok(_) => {
+            // if it was closed, extract_userdata would have errored
+            l.push_boolean(true);
+        }
+        Err(_) => {
+            l.push_boolean(false);
+        }
+    };
+    Ok(1)
 }
 
 #[lua_function]

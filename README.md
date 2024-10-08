@@ -550,6 +550,29 @@ end)
 
 Within a transaction, you can execute queries and fetch data.
 
+#### `IsOpen`
+
+Returns whether the transaction is still open or not.
+
+```lua
+if txn:IsOpen() then
+    print("Transaction is still open!")
+end
+```
+
+#### `Ping`
+
+Pings the database to check the connection status.
+
+> **Note:** It's generally not recommended to use this method to check if a connection is alive, as it may not be reliable. For more information, refer to [this article](https://www.percona.com/blog/checking-for-a-live-database-connection-considered-harmful/).
+
+```lua
+local success, err = txn:Ping()
+if not success then
+    print("Error during ping:", err.message)
+end
+```
+
 #### `Execute`
 
 ```lua
