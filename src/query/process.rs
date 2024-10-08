@@ -6,7 +6,7 @@ use sqlx::{
         chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc},
         Decimal,
     },
-    Column, Row, TypeInfo,
+    Column, Row, TypeInfo, ValueRef as _,
 };
 
 pub fn process_info(l: lua::State, info: MySqlQueryResult) -> Result<i32> {
@@ -65,6 +65,12 @@ fn push_column_value_to_lua(
     column_name: &str,
     column_type: &str,
 ) -> Result<()> {
+    let value = row.try_get_raw(column_name)?;
+    if value.is_null() {
+        l.push_nil();
+        return Ok(());
+    }
+
     match column_type {
         "NULL" => l.push_nil(),
         "BOOLEAN" => {
