@@ -117,7 +117,8 @@ impl Conn {
             return Ok(());
         }
 
-        let mut inner_conn = self.inner.lock().await.take();
+        let mut inner_conn_mutex = self.inner.lock().await;
+        let mut inner_conn = inner_conn_mutex.take();
 
         if let Some(conn) = inner_conn.take() {
             // let's gracefully close the connection if there is any
@@ -131,7 +132,7 @@ impl Conn {
 
         match MySqlConnection::connect_with(connect_opts).await {
             Ok(conn) => {
-                inner_conn.replace(conn);
+                inner_conn_mutex.replace(conn);
             }
             Err(e) => {
                 self.set_state(State::Error);
