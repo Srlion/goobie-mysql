@@ -67,6 +67,10 @@ fn push_column_value_to_lua(
 ) -> Result<()> {
     match column_type {
         "NULL" => l.push_nil(),
+        "BOOLEAN" => {
+            let b: bool = row.get(column_name);
+            l.push_number(b as i32);
+        }
         "TINYINT" | "TINYINT UNSIGNED" | "SMALLINT" | "SMALLINT UNSIGNED" | "INT" | "INTEGER" => {
             let i32: i32 = row.get(column_name);
             l.push_number(i32);
