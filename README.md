@@ -629,12 +629,6 @@ end
 - **Do NOT** keep transactions open for a long time.
 - Transaction queries do **not** accept callbacks; they return results directly.
 
-**Usage:**
-
-```lua
-if conn.State() == goobie_mysql.STATES.CONNECTED then
-    print("Connected!")
-end
 ```
 
 ## Graceful Shutdown
@@ -659,3 +653,4 @@ This library is newly released and may contain bugs. Please report any issues yo
 Be aware that breaking changes may occur in future updates. Always check the changelog before updating to a new version.
 
 ---
+```
