@@ -113,17 +113,10 @@ fn push_column_value_to_lua(
             let timestamp: DateTime<Utc> = row.get(column_name);
             l.push_string(&timestamp.to_string());
         }
-        "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
+        "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" | "CHAR"
+        | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "JSON" | "ENUM" | "SET" => {
             let binary: Vec<u8> = row.get(column_name);
             l.push_binary_string(&binary);
-        }
-        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => {
-            let text: String = row.get(column_name);
-            l.push_string(&text);
-        }
-        "JSON" | "ENUM" | "SET" => {
-            let text: String = row.get(column_name);
-            l.push_string(&text);
         }
         "BIT" => {
             // figure out what to push, string or a vector or a number
