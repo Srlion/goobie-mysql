@@ -629,8 +629,6 @@ end
 - **Do NOT** keep transactions open for a long time.
 - Transaction queries do **not** accept callbacks; they return results directly.
 
-```
-
 ## Graceful Shutdown
 
 The library supports graceful shutdown by waiting for pending queries before shutting down. However, callbacks for those queries will **not** be called after shutdown. The default timeout is 10 seconds if queries are still pending.
@@ -653,4 +651,7 @@ This library is newly released and may contain bugs. Please report any issues yo
 Be aware that breaking changes may occur in future updates. Always check the changelog before updating to a new version.
 
 ---
+
+```
+
 ```
