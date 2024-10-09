@@ -20,8 +20,7 @@ pub struct Query {
     pub query: String,
     pub r#type: QueryType,
     pub params: Params,
-    pub on_done: i32,
-    pub on_error: i32,
+    pub callback: i32,
     pub sync: bool,
     pub raw: bool,
 }
@@ -34,8 +33,7 @@ impl Query {
             sync: true,
             raw: false,
             params: Vec::new(),
-            on_error: LUA_NOREF,
-            on_done: LUA_NOREF,
+            callback: LUA_NOREF,
         }
     }
 
@@ -104,12 +102,8 @@ impl Query {
     }
 
     fn parse_on_fns(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
-        if l.get_field_type_or_nil(arg_n, c"on_done", LUA_TFUNCTION)? {
-            self.on_done = l.reference();
-        }
-
-        if l.get_field_type_or_nil(arg_n, c"on_error", LUA_TFUNCTION)? {
-            self.on_error = l.reference();
+        if l.get_field_type_or_nil(arg_n, c"callback", LUA_TFUNCTION)? {
+            self.callback = l.reference();
         }
 
         Ok(())
@@ -139,48 +133,44 @@ impl Query {
         res: Result<QueryResult>,
         traceback: Option<&str>,
     ) -> i32 {
-        let process = || {
-            let res = match res {
-                Ok(QueryResult::Execute(info)) => process_info(l, info),
-                Ok(QueryResult::Row(row)) => process_row(l, row),
-                Ok(QueryResult::Rows(rows)) => process_rows(l, &rows),
-                Err(e) => Err(e),
-            };
+        let res = match res {
+            Ok(QueryResult::Execute(info)) => process_info(l, info),
+            Ok(QueryResult::Row(row)) => process_row(l, row),
+            Ok(QueryResult::Rows(rows)) => process_rows(l, &rows),
+            Err(e) => Err(e),
+        };
 
-            // handle_error pushes the error as a table to the stack
-            res.map_err(|e| handle_error(l, e))
+        let (returns_count, err_msg) = match res {
+            Ok(0) => {
+                l.push_nil();
+                (1, None)
+            }
+            Ok(n) => {
+                l.push_nil();
+                l.insert(-n - 1);
+                (n + 1, None)
+            }
+            Err(e) => {
+                // handle_error pushes the error as a table to the stack
+                let err_msg = handle_error(l, e);
+                (1, Some(err_msg))
+            }
         };
 
         if self.sync {
-            return match process() {
-                Ok(rets) => {
-                    if rets == 0 {
-                        l.push_nil();
-                        1
-                    } else {
-                        l.push_nil();
-                        l.insert(-rets - 1);
-                        rets + 1
-                    }
-                }
-                Err(_) => 1,
-            };
+            return returns_count;
         }
 
-        match process() {
-            Ok(rets) => {
-                l.pcall_ignore_function_ref(self.on_done, rets, 0);
+        let (called_function, _) = l.pcall_ignore_function_ref(self.callback, returns_count, 0);
+        // make sure that if there is an error, it doesn't go silent
+        // can't combine these two if statements because it's not stabliized yet for using "if let" statement :)
+        if !called_function {
+            if let Some(err_msg) = err_msg {
+                l.error_no_halt(&err_msg, traceback);
             }
-            Err(msg) => {
-                let (called_function, _) = l.pcall_ignore_function_ref(self.on_error, 1, 0);
-                if !called_function {
-                    l.error_no_halt(&msg, traceback);
-                }
-            }
-        };
+        }
 
-        l.dereference(self.on_done);
-        l.dereference(self.on_error);
+        l.dereference(self.callback);
 
         0
     }

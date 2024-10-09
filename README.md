@@ -122,12 +122,14 @@ Executes a query without returning any data (e.g., `INSERT`, `UPDATE`).
 ```lua
 conn:Execute("INSERT INTO users (name, age) VALUES (?, ?)", {
     params = {"John Doe", 30},
-    on_done = function(result)
-        print("Affected Rows:", result.affected_rows)
-        print("Insert ID:", result.insert_id)
-    end,
-    on_error = function(err)
-        print("Error:", err.message)
+    callback = function(err, res)
+        if err then
+            print("Error:", err.message)
+            return
+        end
+
+        print("Affected Rows:", res.affected_rows)
+        print("Insert ID:", res.insert_id)
     end,
 })
 ```
@@ -135,7 +137,7 @@ conn:Execute("INSERT INTO users (name, age) VALUES (?, ?)", {
 **Synchronous execution:**
 
 ```lua
-local err, result = conn:Execute("UPDATE users SET age = age + 1 WHERE id = ?", {
+local err, res = conn:Execute("UPDATE users SET age = age + 1 WHERE id = ?", {
     params = {1},
     sync = true,
 })
@@ -143,7 +145,8 @@ if err then
     print("Error:", err.message)
     -- Handle error
 else
-    print("Rows affected:", result.affected_rows)
+    print("Rows affected:", res.affected_rows)
+    print("Insert ID:", res.insert_id)
 end
 ```
 
@@ -158,14 +161,16 @@ Fetches multiple rows from a `SELECT` query.
 ```lua
 conn:Fetch("SELECT * FROM users WHERE age > ?", {
     params = {20},
-    on_done = function(rows)
+    callback = function(err, rows)
+        if err then
+            print("Error:", err.message)
+            return
+        end
+
         for _, row in ipairs(rows) do
             print("User:", row.name, "Age:", row.age)
         end
-    end,
-    on_error = function(err)
-        print("Error:", err.message)
-    end,
+    end
 })
 ```
 
@@ -194,16 +199,18 @@ Fetches a single row from a `SELECT` query.
 ```lua
 conn:FetchOne("SELECT * FROM users WHERE id = ?", {
     params = {1},
-    on_done = function(row)
+    callback = function(err, row)
+        if err then
+            print("Error:", err.message)
+            return
+        end
+
         if row then
             print("User:", row.name, "Age:", row.age)
         else
             print("No user found.")
         end
-    end,
-    on_error = function(err)
-        print("Error:", err.message)
-    end,
+    end
 })
 ```
 
@@ -297,7 +304,7 @@ I use it to test async queries in a synchronous environment, to verify that they
 ```lua
 local is_done = false
 conn:Execute("SELECT 1", {
-    on_done = function()
+    callback = function()
         is_done = true
     },
 })
@@ -328,14 +335,13 @@ The following options can be used with `Execute`, `Fetch`, and `FetchOne` method
 | `sync`     | `boolean`  | If `true`, runs the query synchronously. Defaults to `false`.                                                                                       |
 | `raw`      | `boolean`  | If `true`, executes the query as a raw SQL string without using prepared statements. Defaults to `false`. Useful for executing multiple statements. |
 | `params`   | `table`    | Parameters for parameterized queries. Ignored if `raw = true`.                                                                                      |
-| `on_done`  | `function` | Callback function called upon successful completion of the query.                                                                                   |
-| `on_error` | `function` | Callback function called when an error occurs during the query execution.                                                                           |
+| `callback` | `function` | Callback function invoked when the process is complete.                                                                                             |
 
 **Notes:**
 
 - When using `raw = true`, you can execute multiple statements in a single query.
 - Be cautious with raw queries to avoid SQL injection attacks. Only use raw queries when necessary.
-- Refer to the [Error Table](#error-table) for the structure of error objects passed to `on_error`.
+- Refer to the [Error Table](#error-table) for the structure of error objects passed to `callback`.
 
 ### Connection Methods
 
