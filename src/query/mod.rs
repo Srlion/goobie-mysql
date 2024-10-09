@@ -81,8 +81,9 @@ impl Query {
                     self.params.push(Param::Number(num as i32));
                 }
                 LUA_TSTRING => {
-                    let s = l.get_string_unchecked(-1);
-                    self.params.push(Param::String(s.into_owned()));
+                    // SAFETY: We just checked the type
+                    let s = l.get_binary_string(-1).unwrap();
+                    self.params.push(Param::String(s.to_owned()));
                 }
                 LUA_TBOOLEAN => {
                     let b = l.get_boolean(-1);
