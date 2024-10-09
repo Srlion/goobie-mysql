@@ -214,15 +214,6 @@ impl std::fmt::Display for Conn {
 //     }
 // }
 
-fn call_on_error(l: lua::State, on_error: i32, err: anyhow::Error, traceback: &str) {
-    let msg = handle_error(l, err);
-
-    let (called_function, _) = l.pcall_ignore_function_ref(on_error, 1, 0);
-    if !called_function {
-        l.error_no_halt(&msg, Some(traceback));
-    }
-}
-
 #[lua_function]
 fn new(l: lua::State) -> Result<i32> {
     let traceback = l.get_traceback(l, 1).into_owned();
@@ -241,14 +232,31 @@ fn start_connect(l: lua::State) -> Result<i32> {
     let traceback = l.get_traceback(l, 1).into_owned();
     let conn = Conn::extract_userdata(l)?;
 
+    // this is dumb but works lol
+    l.push_value(1); // push the connection userdata
+    let conn_ref = l.reference();
     let on_connected = conn.connect_options.on_connected;
+    let on_error = conn.connect_options.on_error;
+
     run_async(async move {
         let res = conn.start().await;
-        wait_lua_tick(traceback.clone(), move |l| match res {
-            Ok(_) => {
-                l.pcall_ignore_function_ref(on_connected, 0, 0);
-            }
-            Err(e) => call_on_error(l, conn.connect_options.on_error, e, &traceback),
+        wait_lua_tick(traceback.clone(), move |l| {
+            match res {
+                Ok(_) => {
+                    l.from_reference(conn_ref); // push the connection userdata
+                    l.pcall_ignore_function_ref(on_connected, 1, 0);
+                }
+                Err(e) => {
+                    l.from_reference(conn_ref); // push the connection userdata
+                    let msg = handle_error(l, e);
+                    let (called_function, _) = l.pcall_ignore_function_ref(on_error, 2, 0);
+                    if !called_function {
+                        l.error_no_halt(&msg, Some(&traceback));
+                    }
+                }
+            };
+
+            l.dereference(conn_ref);
         });
     });
 
@@ -267,14 +275,28 @@ fn start_disconnect(l: lua::State) -> Result<i32> {
     let traceback = l.get_traceback(l, 1).into_owned();
     let conn = Conn::extract_userdata(l)?;
 
+    // this is dumb but works lol
+    l.push_value(1); // push the connection userdata
+    let conn_ref = l.reference();
     let on_disconnected = conn.connect_options.on_disconnected;
+
     run_async(async move {
         let res = conn.disconnect().await;
-        wait_lua_tick(traceback.clone(), move |l| match res {
-            Ok(_) => {
-                l.pcall_ignore_function_ref(on_disconnected, 0, 0);
-            }
-            Err(e) => call_on_error(l, conn.connect_options.on_error, e, &traceback),
+        wait_lua_tick(traceback.clone(), move |l| {
+            match res {
+                Ok(_) => {
+                    l.from_reference(conn_ref); // push the connection userdata
+                    l.pcall_ignore_function_ref(on_disconnected, 1, 0);
+                }
+                Err(e) => {
+                    l.from_reference(conn_ref); // push the connection userdata
+                    let msg = handle_error(l, e);
+                    l.pcall_ignore_function_ref(on_disconnected, 2, 0);
+                    l.error_no_halt(&msg, Some(&traceback));
+                }
+            };
+
+            l.dereference(conn_ref);
         });
     });
 
@@ -432,33 +454,23 @@ fn __gc(l: lua::State) -> Result<i32> {
                 //
 
                 if conn_cloned.state() == State::Disconnected {
-                    wait_lua_tick(traceback, move |l| {
-                        l.dereference(on_disconnected);
-                    });
                     return;
                 }
             };
 
             let res = conn_cloned.disconnect().await;
-            wait_lua_tick(traceback.clone(), move |l| {
-                match res {
-                    Ok(_) => {
-                        l.pcall_ignore_function_ref(on_disconnected, 0, 0);
-                    }
-                    Err(e) => {
-                        let msg = handle_error(l, e);
-                        l.pcall_ignore_function_ref(on_disconnected, 1, 0);
-                        l.error_no_halt(&msg, Some(&traceback));
-                    }
-                };
-
-                l.dereference(on_disconnected);
-            });
+            if let Err(e) = res {
+                let err = e.to_string();
+                wait_lua_tick(traceback.clone(), move |l| {
+                    l.error_no_halt(&err, Some(&traceback));
+                });
+            }
         });
     }
 
     l.dereference(on_connected);
     l.dereference(on_error);
+    l.dereference(on_disconnected);
 
     Ok(0)
 }

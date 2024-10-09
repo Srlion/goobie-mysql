@@ -56,15 +56,15 @@ You can create a new connection using `goobie_mysql.NewConn`, which accepts eith
 
 ```lua
 local conn = goobie_mysql.NewConn("mysql://user:password@localhost/database", {
-    on_connected = function()
+    on_connected = function(conn)
         print("Connected to the database!")
     end,
-    on_disconnected = function(err)
+    on_disconnected = function(conn, err)
         if err then
             print("Error during disconnect:", err.message)
         end
     end,
-    on_error = function(err)
+    on_error = function(conn, err)
         print("Connection error:", err.message)
     end,
 })
@@ -79,15 +79,15 @@ local conn = goobie_mysql.NewConn({
     user = "user",
     password = "password",
     port = 3306,
-    on_connected = function()
+    on_connected = function(conn)
         print("Connected to the database!")
     end,
-    on_disconnected = function(err)
+    on_disconnected = function(conn, err)
         if err then
             print("Error during disconnect:", err.message)
         end
     end,
-    on_error = function(err)
+    on_error = function(conn, err)
         print("Connection error:", err.message)
     end,
 })
@@ -387,9 +387,9 @@ goobie_mysql.NewConn(config: string | table, options: table | nil) --> Connectio
 
 **Options (Event Callbacks):**
 
-- **on_connected**: `function() end` — Called when the connection is successfully established.
-- **on_error**: `function(err: Error_Table) end` — Called when an error occurs during connection.
-- **on_disconnected**: `function(err: Error_Table | nil) end` — Called when the connection is disconnected. If an error occurs during disconnect, it's passed as an argument.
+- **on_connected**: `function(conn: Connection) end` — Called when the connection is successfully established.
+- **on_error**: `function(conn: Connection, err: Error_Table) end` — Called when an error occurs during connection.
+- **on_disconnected**: `function(conn: Connection, err: Error_Table | nil) end` — Called when the connection is disconnected. If an error occurs during disconnect, it's passed as an argument.
 
 **Notes:**
 
