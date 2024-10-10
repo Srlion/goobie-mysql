@@ -622,7 +622,7 @@ end
 #### Notes on Transactions
 
 - Implemented using coroutines; transactions run like synchronous code.
-- Always check for errors after each query inside a transaction. Transactions automatically roll back if a query or Lua error occurs, or if `Commit`/`Rollback` is not called.
+- Always check for errors after each query inside a transaction. Transactions automatically roll back if Lua error occurs, or if `Commit`/`Rollback` is not called.
 - After a rollback, the transaction cannot be used further.
 - Transactions take a mutex lock on the connection. Commit or rollback as soon as possible to release the lock.
 - **Do NOT** keep transactions open for a long time.

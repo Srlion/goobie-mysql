@@ -346,10 +346,6 @@ fn internal_query(l: lua::State, query_type: QueryType) -> Result<i32> {
                 (res, query)
             });
 
-            if res.is_err() {
-                let _ = txn.finalize(Action::Rollback).await;
-            }
-
             (res, query)
         });
 
@@ -362,10 +358,6 @@ fn internal_query(l: lua::State, query_type: QueryType) -> Result<i32> {
             let mut txn = txn_mutex_clone.lock().await;
             let (res, query) =
                 get_connection!(txn.conn_guard, conn => (query.start(conn).await, query));
-
-            if res.is_err() {
-                let _ = txn.finalize(Action::Rollback).await;
-            }
 
             (res, query)
         };
