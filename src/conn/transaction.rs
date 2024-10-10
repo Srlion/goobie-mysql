@@ -162,14 +162,16 @@ impl Transaction {
             Ok(LUA_OK) | Err(_) => {
                 run_async(async move {
                     let mut txn = txn_mutex.lock().await;
-                    let _ = txn.finalize(Action::Rollback).await;
-
-                    if let Ok(LUA_OK) = res {
-                        eprintln!(
-                            "[ERROR] forgot to finalize transaction!\n{}\n",
-                            txn.traceback
-                        );
+                    if txn.is_open() {
+                        if let Ok(LUA_OK) = res {
+                            eprintln!(
+                                "[ERROR] forgot to finalize transaction!\n{}\n",
+                                txn.traceback
+                            );
+                        }
                     }
+
+                    let _ = txn.finalize(Action::Rollback).await;
                 });
             }
             _ => {}
