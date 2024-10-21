@@ -73,11 +73,19 @@ fn push_column_value_to_lua(
 
     match column_type {
         "NULL" => l.push_nil(),
-        "BOOLEAN" => {
+        "BOOLEAN" | "BOOL" => {
             let b: bool = row.get(column_name);
             l.push_boolean(b);
         }
-        "TINYINT" | "TINYINT UNSIGNED" | "SMALLINT" | "SMALLINT UNSIGNED" | "INT" | "INTEGER" => {
+        "TINYINT" => {
+            let i8: i8 = row.get(column_name);
+            l.push_number(i8);
+        }
+        "SMALLINT" => {
+            let i16: i16 = row.get(column_name);
+            l.push_number(i16);
+        }
+        "INT" | "INTEGER" => {
             let i32: i32 = row.get(column_name);
             l.push_number(i32);
         }
@@ -85,11 +93,27 @@ fn push_column_value_to_lua(
             let i64: i64 = row.get(column_name);
             l.push_number(i64);
         }
-        "INT UNSIGNED" | "BIGINT UNSIGNED" => {
+        "TINYINT UNSIGNED" => {
+            let u8: u8 = row.get(column_name);
+            l.push_number(u8);
+        }
+        "SMALLINT UNSIGNED" => {
+            let u16: u16 = row.get(column_name);
+            l.push_number(u16);
+        }
+        "INT UNSIGNED" => {
+            let u32: u32 = row.get(column_name);
+            l.push_number(u32);
+        }
+        "BIGINT UNSIGNED" => {
             let u64: u64 = row.get(column_name);
             l.push_number(u64);
         }
-        "FLOAT" | "DOUBLE" => {
+        "FLOAT" => {
+            let f32: f32 = row.get(column_name);
+            l.push_number(f32);
+        }
+        "DOUBLE" => {
             let f64: f64 = row.get(column_name);
             l.push_number(f64);
         }
