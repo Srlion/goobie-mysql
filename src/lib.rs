@@ -37,6 +37,7 @@ fn gmod13_open(l: lua::State) -> i32 {
     runtime::load(get_max_worker_threads(l));
 
     conn::on_gmod_open::init(l);
+    error::init(l);
 
     0
 }
