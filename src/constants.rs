@@ -26,7 +26,7 @@ pub const GLOBAL_TABLE_NAME: &str = {
 pub const GLOBAL_TABLE_NAME_C: LuaCStr = cstr_from_args!(GLOBAL_TABLE_NAME);
 
 // How many threads to use for the runtime
-pub const DEFAULT_WORKER_THREADS: u16 = 2;
+pub const DEFAULT_WORKER_THREADS: u16 = 1;
 
 // How long to wait for pending tasks to complete before unloading
 pub const TASKS_WAITING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
