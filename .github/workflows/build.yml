@@ -10,12 +10,12 @@ on:
 
 jobs:
   bump-version:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
-      tag: ${{ steps.bump_version.outputs.new_tag }}
-      version_underscore: ${{ steps.version_underscore.outputs.version_underscore }}
+      new_tag: ${{ steps.bump_version.outputs.new_tag }}
+      new_tag_major: ${{ steps.bump_version.outputs.new_tag_major }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,27 +23,44 @@ jobs:
 
       - name: Bump Version
         id: bump_version
-        uses: anothrNick/github-tag-action@1.71.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WITH_V: false
-          DEFAULT_BUMP: "patch"
-          INITIAL_VERSION: "0.1.0"
+        uses: Srlion/float-version-semantic@2811c4af2d8e37a37d3b8113ca5a07b4152be2fd
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Output Version with underscores
-        id: version_underscore
-        run: |
-          original_version="${{ steps.bump_version.outputs.new_tag }}"
-          modified_version=${original_version//./_}
-          echo "version_underscore=$modified_version" >> "${GITHUB_OUTPUT}"
-
-  build-linux:
-    runs-on: ubuntu-20.04
+  build:
+    needs: bump-version
+    strategy:
+      matrix:
+        os: [linux, windows]
+        include:
+          - os: linux
+            runs_on: ubuntu-22.04
+            target1: i686-unknown-linux-gnu
+            target2: x86_64-unknown-linux-gnu
+            extra_deps: |
+              sudo apt update
+              sudo apt install gcc-i686-linux-gnu
+              sudo apt install gcc-multilib
+            binary_prefix: "lib"
+            file_ext: "so"
+            suffix32: _linux.dll
+            suffix64: _linux64.dll
+          - os: windows
+            runs_on: windows-2022
+            target1: i686-pc-windows-msvc
+            target2: x86_64-pc-windows-msvc
+            extra_deps: ""
+            binary_prefix: ""
+            file_ext: "dll"
+            suffix32: _win32.dll
+            suffix64: _win64.dll
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: write
-    needs: bump-version
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
 
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
@@ -52,78 +69,34 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get install gcc-i686-linux-gnu
-          sudo apt-get install gcc-multilib
+        if: matrix.os == 'linux'
+        run: ${{ matrix.extra_deps }}
 
-      - name: Add 32-bit & 64-bit targets
-        run: rustup target add i686-unknown-linux-gnu x86_64-unknown-linux-gnu
+      - name: Add targets
+        run: rustup target add ${{ matrix.target1 }} ${{ matrix.target2 }}
 
-      - name: Install cargo-edit to bump version
-        run: cargo install cargo-edit || true
+      - name: Install cargo-set-version
+        run: cargo install cargo-set-version
 
       - name: Bump Cargo version
-        run: cargo set-version "${{ needs.bump-version.outputs.tag }}"
+        run: cargo set-version "${{ needs.bump-version.outputs.new_tag }}.0"
 
-      - name: Build 32-bit & 64-bit
+      - name: Build targets
         run: |
-          cargo build --release --target i686-unknown-linux-gnu
-          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo build --release --target ${{ matrix.target1 }}
+          cargo build --release --target ${{ matrix.target2 }}
 
       - name: Rename binaries
         run: |
-          mv target/i686-unknown-linux-gnu/release/libgmsv_goobie_mysql.so target/i686-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux.dll
-          mv target/x86_64-unknown-linux-gnu/release/libgmsv_goobie_mysql.so target/x86_64-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux64.dll
+          mv target/${{ matrix.target1 }}/release/${{ matrix.binary_prefix }}gmsv_goobie_mysql.${{ matrix.file_ext }} target/${{ matrix.target1 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix32 }}
+          mv target/${{ matrix.target2 }}/release/${{ matrix.binary_prefix }}gmsv_goobie_mysql.${{ matrix.file_ext }} target/${{ matrix.target2 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix64 }}
 
-      - name: Release
+      - name: Release Artifacts
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
           token: "${{ secrets.GITHUB_TOKEN }}"
-          tag: "${{ needs.bump-version.outputs.tag }}"
+          tag: "${{ needs.bump-version.outputs.new_tag_major }}"
           artifacts: |
-            target/i686-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux.dll
-            target/x86_64-unknown-linux-gnu/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_linux64.dll
-
-  build-windows:
-    runs-on: windows-2022
-    permissions:
-      contents: write
-    needs: bump-version
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Rust
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Set up rust-cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Add 32-bit & 64-bit targets
-        run: rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
-
-      - name: Install cargo-edit to bump version
-        run: cargo install cargo-edit
-
-      - name: Bump Cargo version
-        run: cargo set-version "${{ needs.bump-version.outputs.tag }}"
-
-      - name: Build 32-bit & 64-bit
-        run: |
-          cargo build --release --target i686-pc-windows-msvc
-          cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Rename binaries
-        run: |
-          mv target/i686-pc-windows-msvc/release/gmsv_goobie_mysql.dll target/i686-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win32.dll
-          mv target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql.dll target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win64.dll
-
-      - name: Release
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          token: "${{ secrets.GITHUB_TOKEN }}"
-          tag: "${{ needs.bump-version.outputs.tag }}"
-          artifacts: |
-            target/i686-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win32.dll
-            target/x86_64-pc-windows-msvc/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.version_underscore }}_win64.dll
+            target/${{ matrix.target1 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix32 }}
+            target/${{ matrix.target2 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix64 }}

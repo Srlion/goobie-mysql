@@ -1,6 +1,6 @@
 [package]
 name = "goobie-mysql"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
 
 [lib]
@@ -8,13 +8,13 @@ name = "gmsv_goobie_mysql"
 crate-type = ["cdylib"]
 
 [dependencies]
-gmod = { git = "https://github.com/Srlion/gmod-rs.git", rev = "459c107" }
-tokio = { version = "1.42.0", default-features = false, features = [
+gmod = { git = "https://github.com/Srlion/gmod-rs.git", rev = "c17e91c" }
+tokio = { version = "1.43.0", default-features = false, features = [
     "rt-multi-thread",
     "macros",
 ] }
-anyhow = "1.0.89"
-sqlx = { version = "0.8.2", features = [
+anyhow = "1.0.96"
+sqlx = { version = "0.8.3", features = [
     "runtime-tokio",
     "tls-native-tls",
     "mysql",
@@ -22,8 +22,8 @@ sqlx = { version = "0.8.2", features = [
     "chrono",
 ] }
 atomic_enum = "0.3.0"
-openssl-sys = { version = "0.9.104", features = ["vendored"] }
-constcat = "0.5.1"
+openssl-sys = { version = "0.9.106", features = ["vendored"] }
+const_format = "0.2.34"
 tokio-util = { version = "0.7.13", features = ["rt"] }
 
 [profile.release]

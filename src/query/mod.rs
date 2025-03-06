@@ -1,28 +1,39 @@
 use anyhow::{bail, Result};
-use gmod::*;
+use gmod::{push_to_lua::PushToLua, *};
 use sqlx::{Executor as _, MySqlConnection};
 
-pub mod param;
 pub mod process;
 pub mod result;
 
-pub use result::{QueryResult, QueryType};
+pub use result::QueryResult;
 
-use param::Param;
-use process::{process_info, process_row, process_rows};
+use process::{convert_row, convert_rows};
 
 use crate::error::handle_error;
 
-pub type Params = Vec<Param>;
+#[derive(Debug)]
+pub enum QueryType {
+    Run,
+    Execute,
+    FetchOne,
+    FetchAll,
+}
+
+#[derive(Debug, Clone)]
+pub enum Param {
+    Number(i32),
+    String(Vec<u8>),
+    Boolean(bool),
+}
 
 #[derive(Debug)]
 pub struct Query {
     pub query: String,
     pub r#type: QueryType,
-    pub params: Params,
-    pub callback: i32,
-    pub sync: bool,
+    pub params: Vec<Param>,
+    pub callback: LuaReference,
     pub raw: bool,
+    pub result: Result<QueryResult>,
 }
 
 impl Query {
@@ -30,20 +41,17 @@ impl Query {
         Self {
             query,
             r#type,
-            sync: true,
             raw: false,
             params: Vec::new(),
             callback: LUA_NOREF,
+            result: Ok(QueryResult::Run), // we just need a placeholder
         }
     }
 
-    pub fn parse_options(&mut self, l: lua::State, arg_n: i32, parse_fns: bool) -> Result<()> {
+    pub fn parse_options(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
         if !l.is_none_or_nil(arg_n) {
             l.check_table(arg_n)?;
         } else {
-            if parse_fns {
-                self.sync = false;
-            }
             return Ok(());
         }
 
@@ -51,14 +59,8 @@ impl Query {
             self.bind_params(l)?
         }
 
-        if parse_fns {
-            if l.get_field_type_or_nil(arg_n, c"sync", LUA_TBOOLEAN)? {
-                self.sync = l.get_boolean(-1);
-                l.pop();
-            } else {
-                self.sync = false;
-                self.parse_on_fns(l, arg_n)?;
-            }
+        if l.get_field_type_or_nil(arg_n, c"callback", LUA_TFUNCTION)? {
+            self.callback = l.reference();
         }
 
         if l.get_field_type_or_nil(arg_n, c"raw", LUA_TBOOLEAN)? {
@@ -72,7 +74,6 @@ impl Query {
     pub fn bind_params(&mut self, l: lua::State) -> Result<()> {
         for i in 1..=l.len(-1) {
             l.raw_geti(-1, i);
-
             match l.lua_type(-1) {
                 LUA_TNUMBER => {
                     let num = l.to_number(-1);
@@ -81,7 +82,7 @@ impl Query {
                 LUA_TSTRING => {
                     // SAFETY: We just checked the type
                     let s = l.get_binary_string(-1).unwrap();
-                    self.params.push(Param::String(s.to_owned()));
+                    self.params.push(Param::String(s));
                 }
                 LUA_TBOOLEAN => {
                     let b = l.get_boolean(-1);
@@ -101,19 +102,12 @@ impl Query {
         Ok(())
     }
 
-    fn parse_on_fns(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
-        if l.get_field_type_or_nil(arg_n, c"callback", LUA_TFUNCTION)? {
-            self.callback = l.reference();
-        }
-
-        Ok(())
-    }
-
     #[inline]
-    pub async fn start<'q>(&mut self, conn: &'q mut MySqlConnection) -> Result<QueryResult> {
+    pub async fn start(&mut self, conn: &'_ mut MySqlConnection) {
         let r#type = &self.r#type;
         if self.raw {
-            handle_query(self.query.as_str(), conn, r#type).await
+            // &str gets treated as raw query in sqlx
+            self.result = handle_query(self.query.as_str(), conn, r#type).await;
         } else {
             let mut query = sqlx::query(self.query.as_str());
             for param in self.params.drain(..) {
@@ -123,60 +117,26 @@ impl Query {
                     Param::Boolean(b) => query = query.bind(b),
                 };
             }
-            handle_query(query, conn, r#type).await
+            self.result = handle_query(query, conn, r#type).await;
         }
     }
 
-    pub fn process_result(
-        &mut self,
-        l: lua::State,
-        res: Result<QueryResult>,
-        traceback: Option<&str>,
-    ) -> i32 {
-        let res = match res {
-            Ok(QueryResult::Execute(info)) => process_info(l, info),
-            Ok(QueryResult::Row(row)) => process_row(l, row),
-            Ok(QueryResult::Rows(rows)) => process_rows(l, &rows),
-            Err(e) => Err(e),
-        };
-
-        let (returns_count, err_msg) = match res {
-            Ok(0) => {
-                l.push_nil();
-                (1, None)
-            }
-            Ok(n) => {
-                l.push_nil();
-                l.insert(-n - 1);
-                (n + 1, None)
-            }
-            Err(e) => {
-                // handle_error pushes the error as a table to the stack
-                let err_msg = handle_error(l, e);
-                (1, Some(err_msg))
-            }
-        };
-
-        if self.sync {
-            return returns_count;
-        }
-
-        let (called_function, _) = l.pcall_ignore_function_ref(self.callback, returns_count, 0);
-        // make sure that if there is an error, it doesn't go silent
-        // can't combine these two if statements because it's not stabliized yet for using "if let" statement :)
-        if !called_function {
-            if let Some(err_msg) = err_msg {
-                l.error_no_halt(&err_msg, traceback);
-            }
-        }
-
-        l.dereference(self.callback);
-
-        0
+    pub fn process_result(&mut self, l: lua::State) {
+        l.pcall_ignore_func_ref(self.callback.as_static(), || {
+            match &self.result {
+                Ok(query_result) => {
+                    query_result.push_to_lua(&l);
+                }
+                Err(e) => {
+                    handle_error(&l, e);
+                }
+            };
+            0
+        });
     }
 }
 
-async fn handle_query<'q, E>(
+async fn handle_query<'a, 'q, E>(
     query: E,
     conn: &'q mut MySqlConnection,
     query_type: &QueryType,
@@ -185,16 +145,22 @@ where
     E: 'q + sqlx::Execute<'q, sqlx::MySql>,
 {
     match query_type {
+        QueryType::Run => {
+            conn.execute(query).await?;
+            Ok(QueryResult::Run)
+        }
         QueryType::Execute => {
             let info = conn.execute(query).await?;
             Ok(QueryResult::Execute(info))
         }
         QueryType::FetchAll => {
             let rows = conn.fetch_all(query).await?;
+            let rows = convert_rows(&rows);
             Ok(QueryResult::Rows(rows))
         }
         QueryType::FetchOne => {
             let row = conn.fetch_optional(query).await?;
+            let row = convert_row(&row);
             Ok(QueryResult::Row(row))
         }
     }

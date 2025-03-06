@@ -1,476 +1,295 @@
 use std::{
     self,
     sync::{
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
 
-use anyhow::{bail, Result};
-use gmod::{lua::*, *};
-use sqlx::{mysql::MySqlConnection, Connection};
-use tokio::sync::Mutex;
+use anyhow::Result;
+use gmod::{lua::*, rstruct::RStruct, task_queue::TaskQueue, *};
+use sqlx::mysql::MySqlConnection;
+use tokio::sync::mpsc;
 
-pub mod on_gmod_open;
+mod connect;
+mod disconnect;
 mod options;
-mod state;
-mod transaction;
+mod ping;
+mod query;
+pub mod state;
 
 use options::Options as ConnectOptions;
 use state::{AtomicState, State};
 
-use crate::{cstr_from_args, error::handle_error, query, run_async, wait_async, GLOBAL_TABLE_NAME};
+use crate::{cstr_from_args, print_goobie, run_async, GLOBAL_TABLE_NAME, GLOBAL_TABLE_NAME_C};
 
-const META_NAME: LuaCStr = cstr_from_args!(GLOBAL_TABLE_NAME, "_connection");
+const META_TABLE_NAME: LuaCStr = cstr_from_args!(GLOBAL_TABLE_NAME, "_connection");
 
-// Used in on_gmod_open.rs
-pub const METHODS: &[LuaReg] = lua_regs![
-    "Start" => start_connect,
-    "StartSync" => start_connect_sync,
+enum ConnMessage {
+    Connect(LuaReference),
+    Disconnect(LuaReference),
+    Query(crate::query::Query),
+    Ping(LuaReference),
+    Close,
+}
 
-    "Disconnect" => start_disconnect,
-    "DisconnectSync" => start_disconnect_sync,
+pub struct ConnMeta {
+    // each connection needs a unique id for each inner connection
+    // this is to be used for transactions to know if they are still in a transaction or not
+    // if it's a new connection, it's not in a transaction, so it MUST forget about it
+    // we don't use the state alone because it could switch back to Connected quickly and the
+    // transaction would think it's still in a transaction
+    id: AtomicUsize,
+    state: AtomicState,
+    opts: ConnectOptions,
+    task_queue: TaskQueue,
+}
 
-    "State" => get_state,
-    "Ping" => ping,
+impl ConnMeta {
+    pub fn set_state(&self, state: State) {
+        self.state.store(state, Ordering::Release);
+    }
+}
 
-    "Execute" => execute,
-    "FetchOne" => fetch_one,
-    "Fetch" => fetch,
-
-    "Begin" => transaction::new,
-    "BeginSync" => transaction::new_sync,
-
-    "IsConnected" => is_connected,
-    "IsConnecting" => is_connecting,
-    "IsDisconnected" => is_disconnected,
-    "IsError" => is_error,
-
-    "__tostring" => __tostring,
-    "__gc" => __gc,
-];
-
-#[repr(C)]
 pub struct Conn {
-    pub inner: Arc<Mutex<Option<MySqlConnection>>>,
-    pub connect_options: ConnectOptions,
-    pub state: AtomicState,
-    pub traceback: String,
-
-    // this is to avoid deadlock when someone mistakenly tries to run a sync conn:query while in a transaction
-    pub transaction_coroutine_ref: AtomicI32, // if any transaction is running
+    meta: Arc<ConnMeta>,
+    sender: mpsc::UnboundedSender<ConnMessage>,
 }
 
 impl Conn {
-    pub fn new(opts: ConnectOptions, traceback: String) -> Self {
-        Conn {
-            inner: Arc::default(),
-            connect_options: opts,
-            state: AtomicState::new(State::NotConnected),
-            traceback,
-            transaction_coroutine_ref: AtomicI32::new(LUA_NOREF),
-        }
-    }
+    pub fn new(l: lua::State, opts: ConnectOptions) -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
 
-    #[inline]
-    pub fn new_userdata(self, l: lua::State) {
-        let ud = Arc::new(self);
-        let ud = Arc::into_raw(ud);
-        l.new_userdata(ud, Some(META_NAME));
-    }
-
-    #[inline]
-    pub fn extract_userdata(l: lua::State) -> Result<Arc<Self>> {
-        let conn_ptr = l.get_userdata::<*const Self>(1, Some(META_NAME))?;
-        let conn_ptr = *conn_ptr;
-
-        unsafe {
-            Arc::increment_strong_count(conn_ptr);
-        }
-
-        let conn = unsafe { Arc::from_raw(conn_ptr) };
-        {
-            let transaction_coroutine_ref = conn
-                .transaction_coroutine_ref
-                .load(Ordering::Acquire);
-
-            if transaction_coroutine_ref != LUA_NOREF
-                && l == transaction::get_coroutine(l, transaction_coroutine_ref)
-            {
-                bail!("DEADLOCK DETECTED: cannot run a query in a transaction while it's running");
-            }
-        }
-        Ok(conn)
-    }
-
-    #[inline]
-    pub fn extract_userdata_no_lock(l: lua::State) -> Result<Arc<Self>> {
-        let conn_ptr = l.get_userdata::<*const Self>(1, Some(META_NAME))?;
-        let conn_ptr = *conn_ptr;
-
-        unsafe {
-            Arc::increment_strong_count(conn_ptr);
-        }
-
-        let conn = unsafe { Arc::from_raw(conn_ptr) };
-        Ok(conn)
-    }
-
-    #[inline]
-    pub fn extract_userdata_consumed(l: lua::State) -> Result<Arc<Self>> {
-        let conn_ptr = l.get_userdata::<*const Self>(1, Some(META_NAME))?;
-        let conn = unsafe { Arc::from_raw(*conn_ptr) };
-        Ok(conn)
-    }
-
-    #[inline]
-    pub async fn start(&self) -> Result<()> {
-        let state = self.state();
-        if state == State::Connecting {
-            return Ok(());
-        }
-
-        let mut inner_conn_mutex = self.inner.lock().await;
-        let mut inner_conn = inner_conn_mutex.take();
-
-        if let Some(conn) = inner_conn.take() {
-            // let's gracefully close the connection if there is any
-            // if it fails, we will still try to connect. we just try to close it
-            let _ = conn.close().await;
-        }
-
-        self.set_state(State::Connecting);
-
-        let connect_opts = &self.connect_options.inner;
-
-        match MySqlConnection::connect_with(connect_opts).await {
-            Ok(conn) => {
-                inner_conn_mutex.replace(conn);
-            }
-            Err(e) => {
-                self.set_state(State::Error);
-                return Err(e.into());
-            }
+        let conn = Conn {
+            meta: Arc::new(ConnMeta {
+                id: AtomicUsize::new(0),
+                state: AtomicState::new(State::NotConnected),
+                opts,
+                task_queue: TaskQueue::new(l),
+            }),
+            sender,
         };
 
-        self.set_state(State::Connected);
+        let meta = conn.meta.clone();
+        run_async(async move {
+            let mut db_conn: Option<MySqlConnection> = None;
+            while let Some(msg) = receiver.recv().await {
+                match msg {
+                    ConnMessage::Connect(callback) => {
+                        // result is handed off to the query callback
+                        let _ = connect::connect(&mut db_conn, &meta, callback).await;
+                    }
+                    ConnMessage::Disconnect(callback) => {
+                        disconnect::disconnect(&mut db_conn, &meta, callback).await
+                    }
+                    ConnMessage::Query(query) => {
+                        query::query(&mut db_conn, &meta, query).await;
+                    }
+                    ConnMessage::Ping(callback) => {
+                        ping::ping(&mut db_conn, &meta, callback).await;
+                    }
+                    // This should be called after "disconnect"
+                    ConnMessage::Close => {
+                        break;
+                    }
+                }
+            }
+        });
 
-        Ok(())
+        conn
     }
 
     #[inline]
-    pub async fn disconnect(&self) -> Result<()> {
-        let mut inner_conn = self.inner.lock().await;
-
-        let state = self.state();
-        if state != State::Connected {
-            return Ok(());
-        }
-
-        // even though conn.close could fail, it will still be disconnected so it's better to
-        // mark it before attempting to close
-        self.set_state(State::Disconnected);
-
-        if let Some(conn) = inner_conn.take() {
-            conn.close().await?;
-        }
-
-        Ok(())
+    fn id(&self) -> usize {
+        self.meta.id.load(Ordering::Acquire)
     }
 
     #[inline]
     fn state(&self) -> State {
-        self.state.load(Ordering::Acquire)
+        self.meta.state.load(Ordering::Acquire)
     }
 
     #[inline]
-    fn set_state(&self, state: State) {
-        self.state.store(state, Ordering::Release);
+    fn poll(&self, l: lua::State) {
+        self.meta.task_queue.poll(l);
     }
+}
 
-    #[inline]
-    async fn ping(&self) -> Result<()> {
-        let mut inner_conn = self.inner.lock().await;
-        let inner_conn = match inner_conn.as_mut() {
-            Some(conn) => conn,
-            None => bail!("connection is not established"),
-        };
+register_lua_rstruct!(
+    Conn,
+    META_TABLE_NAME,
+    &[
+        (c"Poll", poll),
+        //
+        (c"Start", start_connect),
+        (c"Disconnect", start_disconnect),
+        //
+        (c"State", get_state),
+        (c"Ping", ping),
+        //
+        (c"Run", run),
+        (c"Execute", execute),
+        (c"FetchOne", fetch_one),
+        (c"Fetch", fetch),
+        //
+        (c"ID", get_id),
+        (c"Host", get_host),
+        (c"Port", get_port),
+        //
+        (c"__tostring", __tostring),
+    ]
+);
 
-        inner_conn.ping().await?;
+pub fn on_gmod_open(l: lua::State) {
+    state::setup(l);
 
-        Ok(())
-    }
+    l.get_global(GLOBAL_TABLE_NAME_C);
+    l.get_metatable_name(META_TABLE_NAME);
+    l.set_field(-2, c"CONN_META");
+    l.pop(); // pop the global table
 }
 
 impl std::fmt::Display for Conn {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Goobie MySQL Connection ({})", self.state(),)
+        write!(
+            f,
+            "Goobie MySQL Connection [ID: {} | IP: {} | Port: {} | State: {}]",
+            self.id(),
+            self.meta.opts.inner.get_host(),
+            self.meta.opts.inner.get_port(),
+            self.state()
+        )
     }
 }
 
-// impl Drop for Conn {
-//     fn drop(&mut self) {
-//         println!("Dropping connection");
-//     }
-// }
+impl Drop for Conn {
+    fn drop(&mut self) {
+        print_goobie!("GCing connection!");
+        let _ = self
+            .sender
+            .send(ConnMessage::Disconnect(LUA_NOREF));
+        let _ = self.sender.send(ConnMessage::Close);
+    }
+}
 
 #[lua_function]
-fn new(l: lua::State) -> Result<i32> {
-    let traceback = l.get_traceback(l, 1).into_owned();
-
+pub fn new_conn(l: lua::State) -> Result<i32> {
     let mut opts = ConnectOptions::new();
-    opts.parse(l, true)?;
+    opts.parse(l)?;
 
-    let conn = Conn::new(opts, traceback);
-    conn.new_userdata(l);
+    l.pop();
+
+    let conn = Conn::new(l, opts);
+    l.push_struct(conn);
 
     Ok(1)
 }
 
 #[lua_function]
-fn start_connect(l: lua::State) -> Result<i32> {
-    let traceback = l.get_traceback(l, 1).into_owned();
-    let conn = Conn::extract_userdata(l)?;
-
-    // this is dumb but works lol
-    l.push_value(1); // push the connection userdata
-    let conn_ref = l.reference();
-    let on_connected = conn.connect_options.on_connected;
-    let on_error = conn.connect_options.on_error;
-
-    run_async(async move {
-        let res = conn.start().await;
-        wait_lua_tick(traceback.clone(), move |l| {
-            match res {
-                Ok(_) => {
-                    l.from_reference(conn_ref); // push the connection userdata
-                    l.pcall_ignore_function_ref(on_connected, 1, 0);
-                }
-                Err(e) => {
-                    l.from_reference(conn_ref); // push the connection userdata
-                    let msg = handle_error(l, e);
-                    let (called_function, _) = l.pcall_ignore_function_ref(on_error, 2, 0);
-                    if !called_function {
-                        l.error_no_halt(&msg, Some(&traceback));
-                    }
-                }
-            };
-
-            l.dereference(conn_ref);
-        });
-    });
-
+fn poll(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    conn.poll(l);
     Ok(0)
 }
 
 #[lua_function]
-fn start_connect_sync(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
-    wait_async(l, async move { conn.start().await })?;
+fn start_connect(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    let callback_ref = l.check_function(2)?;
+
+    let _ = conn
+        .sender
+        .send(ConnMessage::Connect(callback_ref));
+
     Ok(0)
 }
 
 #[lua_function]
 fn start_disconnect(l: lua::State) -> Result<i32> {
-    let traceback = l.get_traceback(l, 1).into_owned();
-    let conn = Conn::extract_userdata(l)?;
+    let conn = l.get_struct::<Conn>(1)?;
+    let callback_ref = l.check_function(2)?;
 
-    // this is dumb but works lol
-    l.push_value(1); // push the connection userdata
-    let conn_ref = l.reference();
-    let on_disconnected = conn.connect_options.on_disconnected;
+    let _ = conn
+        .sender
+        .send(ConnMessage::Disconnect(callback_ref));
 
-    run_async(async move {
-        let res = conn.disconnect().await;
-        wait_lua_tick(traceback.clone(), move |l| {
-            match res {
-                Ok(_) => {
-                    l.from_reference(conn_ref); // push the connection userdata
-                    l.pcall_ignore_function_ref(on_disconnected, 1, 0);
-                }
-                Err(e) => {
-                    l.from_reference(conn_ref); // push the connection userdata
-                    let msg = handle_error(l, e);
-                    l.pcall_ignore_function_ref(on_disconnected, 2, 0);
-                    l.error_no_halt(&msg, Some(&traceback));
-                }
-            };
+    Ok(0)
+}
 
-            l.dereference(conn_ref);
-        });
-    });
+fn start_query(l: lua::State, query_type: crate::query::QueryType) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+
+    let query_str = l.check_string(2)?;
+    let mut query = crate::query::Query::new(query_str, query_type);
+    query.parse_options(l, 3)?;
+
+    let _ = conn.sender.send(ConnMessage::Query(query));
 
     Ok(0)
 }
 
 #[lua_function]
-fn start_disconnect_sync(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
-    let res = wait_async(l, async move { conn.disconnect().await });
-    if let Err(e) = res {
-        handle_error(l, e);
-        return Ok(1);
-    }
-    Ok(0)
-}
-
-async fn internal_query(conn: Arc<Conn>, query: &mut query::Query) -> Result<query::QueryResult> {
-    let mut inner_conn_mutex = conn.inner.lock().await;
-    let inner_conn = match inner_conn_mutex.as_mut() {
-        Some(conn) => conn,
-        None => bail!("connection is not established"),
-    };
-    query.start(inner_conn).await
-}
-
-fn start_query(l: lua::State, query_type: query::QueryType) -> Result<i32> {
-    let traceback = l.get_traceback(l, 1).into_owned();
-    let conn = Conn::extract_userdata(l)?;
-
-    let query_str = l.check_string(2)?.to_string();
-    let mut query = query::Query::new(query_str, query_type);
-    query.parse_options(l, 3, true)?;
-
-    if query.sync {
-        let (mut query, res) = wait_async(l, async move {
-            let res = internal_query(conn, &mut query).await;
-            (query, res)
-        });
-        return Ok(query.process_result(l, res, None));
-    }
-
-    run_async(async move {
-        let res = internal_query(conn, &mut query).await;
-        wait_lua_tick(traceback.clone(), move |l| {
-            query.process_result(l, res, Some(&traceback));
-        });
-    });
-
-    Ok(0)
+fn run(l: lua::State) -> Result<i32> {
+    start_query(l, crate::query::QueryType::Run)
 }
 
 #[lua_function]
 fn execute(l: lua::State) -> Result<i32> {
-    start_query(l, query::QueryType::Execute)
+    start_query(l, crate::query::QueryType::Execute)
 }
 
 #[lua_function]
 fn fetch_one(l: lua::State) -> Result<i32> {
-    start_query(l, query::QueryType::FetchOne)
+    start_query(l, crate::query::QueryType::FetchOne)
 }
 
 #[lua_function]
 fn fetch(l: lua::State) -> Result<i32> {
-    start_query(l, query::QueryType::FetchAll)
-}
-
-#[lua_function]
-fn is_connected(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_bool(conn.state() == State::Connected);
-    Ok(1)
-}
-
-#[lua_function]
-fn is_connecting(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_bool(conn.state() == State::Connecting);
-    Ok(1)
-}
-
-#[lua_function]
-fn is_disconnected(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_bool(conn.state() == State::Disconnected);
-    Ok(1)
-}
-
-#[lua_function]
-fn is_error(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_bool(conn.state() == State::Error);
-    Ok(1)
+    start_query(l, crate::query::QueryType::FetchAll)
 }
 
 #[lua_function]
 fn get_state(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_number(conn.state() as i32);
+    let conn = l.get_struct::<Conn>(1)?;
+    l.push_number(conn.state().to_usize());
     Ok(1)
 }
 
 #[lua_function]
 fn ping(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata(l)?;
+    let conn = l.get_struct::<Conn>(1)?;
+    let callback_ref = l.check_function(2)?;
 
-    let res = wait_async(l, async move { conn.ping().await });
-    match res {
-        Ok(_) => {
-            l.push_bool(true);
-            Ok(1)
-        }
-        Err(e) => {
-            l.push_bool(false);
-            handle_error(l, e);
-            Ok(2)
-        }
-    }
+    let _ = conn.sender.send(ConnMessage::Ping(callback_ref));
+
+    Ok(0)
 }
 
 #[lua_function]
-fn __tostring(l: lua::State) -> Result<i32> {
-    let conn = Conn::extract_userdata_no_lock(l)?;
-    l.push_string(&conn.to_string());
+fn get_id(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    let id = conn.meta.id.load(Ordering::Acquire);
+    l.push_number(id);
     Ok(1)
 }
 
 #[lua_function]
-fn __gc(l: lua::State) -> Result<i32> {
-    // this will Drop the connection (unless there are still references to it)
-    let conn = match Conn::extract_userdata_consumed(l) {
-        Ok(conn) => conn,
-        Err(_) => {
-            return Ok(0);
-        }
-    };
+fn get_host(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    l.push_string(conn.meta.opts.inner.get_host());
+    Ok(1)
+}
 
-    let ConnectOptions {
-        on_connected,
-        on_error,
-        on_disconnected,
-        ..
-    } = conn.connect_options;
+#[lua_function]
+fn get_port(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    l.push_number(conn.meta.opts.inner.get_port());
+    Ok(1)
+}
 
-    // if gmod closed, then runtime is already closed too
-    // this is a safety, normally __gc should be called before gmod13_close but it's GMOD
-    if !crate::is_gmod_closed() {
-        let conn_cloned = conn.clone();
-        run_async(async move {
-            let traceback = conn_cloned.traceback.clone();
-
-            {
-                // let's wait for any pending operations to finish, as the database could be disconnecting right now
-                let _ = conn_cloned.inner.lock().await;
-                //
-
-                if conn_cloned.state() == State::Disconnected {
-                    return;
-                }
-            };
-
-            let res = conn_cloned.disconnect().await;
-            if let Err(e) = res {
-                let err = e.to_string();
-                wait_lua_tick(traceback.clone(), move |l| {
-                    l.error_no_halt(&err, Some(&traceback));
-                });
-            }
-        });
-    }
-
-    l.dereference(on_connected);
-    l.dereference(on_error);
-    l.dereference(on_disconnected);
-
-    Ok(0)
+#[lua_function]
+fn __tostring(l: lua::State) -> Result<i32> {
+    let conn = l.get_struct::<Conn>(1)?;
+    l.push_string(&conn.to_string());
+    Ok(1)
 }

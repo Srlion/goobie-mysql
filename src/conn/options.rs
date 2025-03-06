@@ -5,45 +5,22 @@ use sqlx::mysql::MySqlConnectOptions;
 #[derive(Debug, Clone)]
 pub struct Options {
     pub inner: MySqlConnectOptions,
-    pub on_connected: i32,
-    pub on_error: i32,
-    pub on_disconnected: i32,
 }
 
 impl Options {
     pub fn new() -> Self {
         Options {
             inner: MySqlConnectOptions::new(),
-            on_connected: LUA_NOREF,
-            on_error: LUA_NOREF,
-            on_disconnected: LUA_NOREF,
         }
     }
 
-    pub fn parse(&mut self, l: lua::State, parse_on_fns: bool) -> Result<()> {
+    pub fn parse(&mut self, l: lua::State) -> Result<()> {
         // if first argument is a string then it's a uri and increment arg_number as next argument has to be a table or nil
-        let mut arg_n = 1;
-        if l.is_string(arg_n) {
-            self.parse_uri(l, arg_n)?;
-            arg_n = 2;
-        }
+        l.check_table(1)?;
 
-        if !l.is_none_or_nil(arg_n) {
-            l.check_table(arg_n)?;
-        } else {
-            return Ok(());
-        }
-
-        // no uri provided, parse connect options
-        if arg_n == 1 {
-            self.parse_uri_options(l, arg_n)?;
-        }
-
-        if parse_on_fns {
-            self.parse_on_fns(l, arg_n)?;
-        }
-
-        self.parse_connect_options(l, arg_n)?;
+        self.parse_uri_options(l, 1)?;
+        // self.parse_on_fns(l, 1)?;
+        self.parse_connect_options(l, 1)?;
 
         Ok(())
     }
@@ -54,21 +31,13 @@ impl Options {
         Ok(())
     }
 
-    fn parse_on_fns(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
-        if l.get_field_type_or_nil(arg_n, c"on_connected", LUA_TFUNCTION)? {
-            self.on_connected = l.reference();
-        }
-
-        if l.get_field_type_or_nil(arg_n, c"on_error", LUA_TFUNCTION)? {
-            self.on_error = l.reference();
-        }
-
-        if l.get_field_type_or_nil(arg_n, c"on_disconnected", LUA_TFUNCTION)? {
-            self.on_disconnected = l.reference();
-        }
-
-        Ok(())
-    }
+    //     fn parse_on_fns(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
+    //         // if l.get_field_type_or_nil(arg_n, c"on_error", LUA_TFUNCTION)? {
+    //         //     self.on_error = l.reference();
+    //         // }
+    //
+    //         Ok(())
+    //     }
 
     fn parse_uri_options(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
         if l.get_field_type_or_nil(arg_n, c"uri", LUA_TSTRING)? {
@@ -77,7 +46,7 @@ impl Options {
             if l.get_field_type_or_nil(arg_n, c"host", LUA_TSTRING)?
                 || l.get_field_type_or_nil(arg_n, c"hostname", LUA_TSTRING)?
             {
-                let hot = l.get_string_unchecked(-1).into_owned(); // 😲
+                let hot = l.get_string_unchecked(-1); // 😲
                 self.inner = self.inner.clone().host(&hot);
                 l.pop();
             }
@@ -91,13 +60,13 @@ impl Options {
             if l.get_field_type_or_nil(arg_n, c"username", LUA_TSTRING)?
                 || l.get_field_type_or_nil(arg_n, c"user", LUA_TSTRING)?
             {
-                let user = l.get_string_unchecked(-1).into_owned();
+                let user = l.get_string_unchecked(-1);
                 self.inner = self.inner.clone().username(&user);
                 l.pop();
             }
 
             if l.get_field_type_or_nil(arg_n, c"password", LUA_TSTRING)? {
-                let pass = l.get_string_unchecked(-1).into_owned();
+                let pass = l.get_string_unchecked(-1);
                 self.inner = self.inner.clone().password(&pass);
                 l.pop();
             } else {
@@ -122,19 +91,19 @@ impl Options {
 
     fn parse_connect_options(&mut self, l: lua::State, arg_n: i32) -> Result<()> {
         if l.get_field_type_or_nil(arg_n, c"charset", LUA_TSTRING)? {
-            let charset = l.get_string_unchecked(-1).into_owned();
+            let charset = l.get_string_unchecked(-1);
             self.inner = self.inner.clone().charset(&charset);
             l.pop();
         }
 
         if l.get_field_type_or_nil(arg_n, c"collation", LUA_TSTRING)? {
-            let collation = l.get_string_unchecked(-1).into_owned();
+            let collation = l.get_string_unchecked(-1);
             self.inner = self.inner.clone().collation(&collation);
             l.pop();
         }
 
         if l.get_field_type_or_nil(arg_n, c"timezone", LUA_TSTRING)? {
-            let timezone = l.get_string_unchecked(-1).into_owned();
+            let timezone = l.get_string_unchecked(-1);
             self.inner = self.inner.clone().timezone(timezone);
             l.pop();
         }
@@ -145,6 +114,12 @@ impl Options {
                 .inner
                 .clone()
                 .statement_cache_capacity(capacity);
+            l.pop();
+        }
+
+        if l.get_field_type_or_nil(arg_n, c"socket", LUA_TSTRING)? {
+            let socket = l.get_string_unchecked(-1);
+            self.inner = self.inner.clone().socket(socket);
             l.pop();
         }
 

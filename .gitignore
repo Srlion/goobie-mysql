@@ -3,3 +3,4 @@ build.bat
 buildrelease.bat
 unused
 Cargo.lock
+/.vscode

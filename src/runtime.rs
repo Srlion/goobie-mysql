@@ -1,15 +1,22 @@
-use std::{mem::MaybeUninit, sync::mpsc, time};
+#![allow(static_mut_refs)]
 
-use gmod::{lua, task_queue::run_callbacks};
+use std::mem::MaybeUninit;
+
+use gmod::lua;
 use tokio::runtime::{Builder, Runtime};
 use tokio_util::task::TaskTracker;
 
-use crate::{print_goobie, TASKS_WAITING_TIMEOUT};
+use crate::{constants::*, print_goobie};
 
 static mut RUN_TIME: MaybeUninit<Runtime> = MaybeUninit::uninit();
 static mut TASK_TRACKER: MaybeUninit<TaskTracker> = MaybeUninit::uninit();
+static mut SHUTDOWN_TIMEOUT: u32 = DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT;
 
-pub(super) fn load(worker_threads: u16) {
+pub(super) fn load(l: lua::State) {
+    let worker_threads = get_max_worker_threads(l);
+    unsafe {
+        SHUTDOWN_TIMEOUT = get_graceful_shutdown_timeout(l);
+    }
     print_goobie!("Using {worker_threads} worker threads");
 
     let run_time = Builder::new_multi_thread()
@@ -27,29 +34,36 @@ pub(super) fn load(worker_threads: u16) {
     }
 }
 
-pub(super) fn unload() {
+pub(super) fn unload(_: lua::State) {
     let run_time = unsafe { RUN_TIME.assume_init_read() };
 
     let task_tracker = unsafe { TASK_TRACKER.assume_init_read() };
     task_tracker.close();
 
     if !task_tracker.is_empty() {
+        let timeout = std::time::Duration::from_secs(unsafe { SHUTDOWN_TIMEOUT } as u64);
+
         print_goobie!(
-            "Waiting up to {} seconds for {} pending tasks to complete...",
-            TASKS_WAITING_TIMEOUT.as_secs(),
+            "Waiting up to {} seconds for {} connection(s) to complete...",
+            timeout.as_secs(),
             task_tracker.len()
         );
 
         run_time.block_on(async {
             tokio::select! {
                 _ = task_tracker.wait() => {
-                    print_goobie!("All pending tasks have completed!");
+                    print_goobie!("All connections have completed!");
                 },
-                _ = tokio::time::sleep(TASKS_WAITING_TIMEOUT) => {
-                    print_goobie!("Timed out waiting for pending tasks to complete!");
+                _ = tokio::time::sleep(timeout) => {
+                    print_goobie!("Timed out waiting for connections to complete!");
                 },
             }
         });
+    }
+
+    unsafe {
+        RUN_TIME = MaybeUninit::uninit();
+        TASK_TRACKER = MaybeUninit::uninit();
     }
 }
 
@@ -69,31 +83,72 @@ where
     read().spawn(read_tracker().track_future(fut))
 }
 
-// DO NOT CALL THIS INSIDE __gc OR YOU WILL GET A LOVELY PANIC, not certain why but i think
-// because __gc shouldn't run more lua code? cant tell really but it def about __gc, as using this function
-// in same scenario works fine, it's just __gc that panics
-pub fn wait_async<F>(l: lua::State, fut: F) -> F::Output
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    // so previously, i used block_on but that would cause tokio to panic with:
-    // "Cannot start a runtime from within a runtime. This happens because a function (like `block_on`)
-    // attempted to block the current thread while the thread is being used to drive asynchronous tasks."
-    // this would happen when mixing async with sync code
-    let (tx, rx) = mpsc::sync_channel::<F::Output>(0); // 0 makes it a "rendezvous" channel
+fn get_max_worker_threads(l: lua::State) -> u16 {
+    let mut max_worker_threads = DEFAULT_WORKER_THREADS;
 
-    run_async(async move {
-        let res = fut.await;
-        let _ = tx.send(res);
+    l.get_global(c"CreateConVar");
+    let success = l.pcall_ignore(|| {
+        l.push_string("GOOBIE_MYSQL_WORKER_THREADS");
+        l.push_number(DEFAULT_WORKER_THREADS);
+        l.create_table(2, 0);
+        {
+            l.get_global(c"FCVAR_ARCHIVE");
+            l.raw_seti(-2, 1);
+
+            l.get_global(c"FCVAR_PROTECTED");
+            l.raw_seti(-2, 2);
+        }
+        l.push_string("Number of worker threads for the mysql connection pool");
+        1
     });
 
-    loop {
-        // this will make sure that queries run properly
-        // if a txn is running, it takes the lock till it's over, but if we are just blocking the main thread how would it finish?
-        run_callbacks(l);
-        if let Ok(res) = rx.recv_timeout(time::Duration::from_millis(50)) {
-            return res;
+    if success {
+        l.get_field(-1, c"GetInt");
+        let success = l.pcall_ignore(|| {
+            l.push_value(-2); // push the convar
+            1
+        });
+        if success {
+            max_worker_threads = l.to_number(-1) as u16;
+            l.pop(); // pop the number
         }
+        l.pop(); // pop the object
     }
+
+    max_worker_threads
+}
+
+fn get_graceful_shutdown_timeout(l: lua::State) -> u32 {
+    let mut timeout = DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT;
+
+    l.get_global(c"CreateConVar");
+    let success = l.pcall_ignore(|| {
+        l.push_string("GOOBIE_MYSQL_GRACEFUL_SHUTDOWN_TIMEOUT");
+        l.push_number(DEFAULT_WORKER_THREADS);
+        l.create_table(2, 0);
+        {
+            l.get_global(c"FCVAR_ARCHIVE");
+            l.raw_seti(-2, 1);
+
+            l.get_global(c"FCVAR_PROTECTED");
+            l.raw_seti(-2, 2);
+        }
+        l.push_string("Timeout for graceful shutdown of the mysql connections, in seconds");
+        1
+    });
+
+    if success {
+        l.get_field(-1, c"GetInt");
+        let success = l.pcall_ignore(|| {
+            l.push_value(-2); // push the convar
+            1
+        });
+        if success {
+            timeout = l.to_number(-1) as u32;
+            l.pop(); // pop the number
+        }
+        l.pop(); // pop the object
+    }
+
+    timeout
 }
