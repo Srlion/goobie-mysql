@@ -96,7 +96,7 @@ jobs:
         with:
           allowUpdates: true
           token: "${{ secrets.GITHUB_TOKEN }}"
-          tag: "${{ needs.bump-version.outputs.new_tag_major }}"
+          tag: "${{ needs.bump-version.outputs.new_tag }}"
           artifacts: |
             target/${{ matrix.target1 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix32 }}
             target/${{ matrix.target2 }}/release/gmsv_goobie_mysql_${{ needs.bump-version.outputs.new_tag_major }}${{ matrix.suffix64 }}
